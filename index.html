@@ -234,6 +234,7 @@ DM</textarea></label>
 
 <section id="backup" class="page hidden"><div class="title"><h1>Backup / Importar dados</h1><p>Guarde todos os dados num ficheiro e importe no novo computador quando precisar.</p></div>
 <div class="cards"><div class="card"><label>Artigos</label><strong id="bArtigos">0</strong></div><div class="card"><label>Clientes</label><strong id="bClientes">0</strong></div><div class="card"><label>Vendas</label><strong id="bVendas">0</strong></div><div class="card"><label>Consultas</label><strong id="bConsultas">0</strong></div><div class="card"><label>Último backup</label><strong id="bUltimo" style="font-size:14px">Nunca</strong></div></div>
+<div class="panel"><h2>☁️ Supabase — Base de dados principal</h2><p class="small">Liga este index à tabela única <b>pm_dados</b>. Os dados continuam guardados localmente como cópia de segurança e, quando a sincronização automática está ativa, são enviados também para o Supabase.</p><div class="form" style="grid-template-columns:2fr 2fr 1fr 1fr"><label>Project URL<input id="sbUrl" placeholder="https://xxxxx.supabase.co"></label><label>Publishable / anon key<input id="sbKey" type="password" placeholder="sb_publishable_... ou anon key"></label><label>Tabela<input id="sbTable" value="pm_dados"></label><label class="small" style="display:flex;align-items:center;gap:8px;padding-top:28px"><input id="sbAutoSync" type="checkbox" checked onchange="guardarConfigSupabase()"> Sincronização automática</label></div><div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="guardarConfigSupabase(true)">💾 Guardar ligação</button><button class="btn ghost" onclick="testarSupabase()">🔌 Testar ligação</button><button class="btn green" onclick="sincronizarTudoSupabase(true)">☁️ Enviar dados atuais</button><button class="btn orange" onclick="carregarTudoSupabase(true)">📥 Carregar do Supabase</button></div><div id="sbStatus" class="report-state-note">Supabase ainda não configurado.</div><p class="small">A chave fica guardada apenas neste navegador. Não coloque a <b>service_role key</b> neste ficheiro.</p></div>
 <div class="panel"><h2>Base de dados Excel</h2><p class="small">Escolha o ficheiro <b>base_dados_pedro_morgado.xlsx</b>. Depois da autorização, as alterações ficam guardadas no Excel e também no navegador como cópia de segurança.</p><div class="toolbar"><button class="btn primary" onclick="escolherFicheiroExcel()">📂 Escolher ficheiro Excel</button><button class="btn green" onclick="guardarNoExcel(true)">💾 Guardar agora no Excel</button><button class="btn ghost" onclick="carregarDoExcel()">📥 Carregar dados do Excel</button><label class="small"><input id="excelAutoSaveCheck" type="checkbox" checked onchange="toggleExcelAutoSave()"> Guardar automaticamente no Excel</label></div><div id="excelSyncStatus" class="report-state-note">Nenhum ficheiro Excel selecionado.</div><p class="small">Funciona melhor no Google Chrome ou Microsoft Edge. Na primeira utilização, o navegador pede autorização para abrir e alterar o ficheiro.</p></div>
 <div class="panel"><h2>Backups adicionais</h2><p class="small">Pode continuar a criar um backup JSON ou descarregar uma cópia Excel independente.</p><div class="toolbar"><button class="btn primary" onclick="exportBackupJSON()">💾 Exportar backup JSON</button><button class="btn green" onclick="exportTudoExcel()">📊 Descarregar cópia Excel</button><label class="small"><input id="autoBackupCheck" type="checkbox" onchange="toggleAutoBackup()"> Fazer backup JSON automático</label></div></div>
 <div class="panel"><h2>Importar backup</h2><p class="small">Escolha o ficheiro <b>dm_stock_crm_backup_....json</b>. Isto substitui os dados atuais pelos dados do backup.</p><div class="toolbar"><input id="backupFile" type="file" accept=".json,application/json" onchange="importBackupJSON(this.files[0])"><button class="btn ghost" onclick="document.getElementById('backupFile').value=''">Limpar seleção</button></div><div id="backupMsg" class="small"></div></div>
@@ -281,9 +282,111 @@ function saveDB(){
   localStorage.setItem('dmStockCrmV2_lastSave',new Date().toLocaleString('pt-PT'));
   maybeAutoBackup();
   agendarExcelAutoSave();
+  agendarSupabaseAutoSync();
 }
 function saveDBSilent(){localStorage.setItem('dmStockCrmV2',JSON.stringify(db));localStorage.setItem('dmStockCrmV2_lastSave',new Date().toLocaleString('pt-PT'));}
 function corrigirVendasAntigas(){db.vendas=(db.vendas||[]).map(v=>({...v,...calcVendaValores(v)}));saveDBSilent();}
+
+/* ===== SUPABASE — TABELA ÚNICA pm_dados ===== */
+let supabaseSyncTimer=null;
+let supabaseSyncing=false;
+let supabaseReadyForAutoSync=false;
+const SB_CFG_KEY='dmSupabaseConfigV1';
+function configSupabase(){
+  try{return JSON.parse(localStorage.getItem(SB_CFG_KEY)||'{}')||{}}catch(e){return {}}
+}
+function supabaseConfigurado(){const c=configSupabase();return !!(c.url&&c.key&&c.table)}
+function setSupabaseStatus(msg,tipo='info'){
+  const el=document.getElementById('sbStatus'); if(!el)return;
+  const cores={ok:'#dcfce7',erro:'#fee2e2',warn:'#fef3c7',info:'#eff6ff'};
+  el.style.background=cores[tipo]||cores.info;el.innerHTML=msg;
+}
+function preencherConfigSupabase(){
+  const c=configSupabase();
+  set('sbUrl',c.url||'');set('sbKey',c.key||'');set('sbTable',c.table||'pm_dados');
+  const a=document.getElementById('sbAutoSync');if(a)a.checked=c.autoSync!==false;
+  if(c.url&&c.key)setSupabaseStatus('Configuração guardada. Pode testar a ligação ou carregar/enviar os dados.','info');
+}
+function guardarConfigSupabase(mostrar=false){
+  const prev=configSupabase();
+  const url=(document.getElementById('sbUrl')?.value||prev.url||'').trim().replace(/\/$/,'');
+  const key=(document.getElementById('sbKey')?.value||prev.key||'').trim();
+  const table=(document.getElementById('sbTable')?.value||prev.table||'pm_dados').trim()||'pm_dados';
+  const autoSync=document.getElementById('sbAutoSync')?.checked!==false;
+  localStorage.setItem(SB_CFG_KEY,JSON.stringify({url,key,table,autoSync}));
+  supabaseReadyForAutoSync=true;
+  if(mostrar)setSupabaseStatus(url&&key?'Ligação guardada. Clique em “Testar ligação”.':'Preencha Project URL e a chave publishable/anon. ',url&&key?'ok':'warn');
+}
+function sbHeaders(extra={}){const c=configSupabase();return {'apikey':c.key,'Authorization':'Bearer '+c.key,'Content-Type':'application/json',...extra}}
+function sbEndpoint(params=''){const c=configSupabase();return `${c.url}/rest/v1/${encodeURIComponent(c.table||'pm_dados')}${params}`}
+async function sbFetch(params='',opts={}){
+  if(!supabaseConfigurado())throw new Error('Supabase não configurado. Preencha o URL e a chave.');
+  const r=await fetch(sbEndpoint(params),{...opts,headers:sbHeaders(opts.headers||{})});
+  if(!r.ok){let t=await r.text();throw new Error(`Supabase ${r.status}: ${t||r.statusText}`)}
+  const ct=r.headers.get('content-type')||'';return ct.includes('application/json')?await r.json():null;
+}
+function tipoPluralSupabase(tipo){return ({artigo:'artigos',cliente:'clientes',venda:'vendas',consulta:'consultas',encomenda:'encomendas',orcamento:'orcamentos'})[tipo]||''}
+function linhaSupabase(tipo,o){
+  const x={...o};
+  return {
+    id:String(o.id||id()),tipo_registo:tipo,ativo:true,
+    data:o.data||null,data_validade:o.validade||o.dataValidade||null,data_prevista:o.dataPrevista||null,data_recepcao:o.dataRececao||null,proximo_contacto:o.proximoContacto||null,
+    estado:o.estado||o.tipoRegisto||o.ok||null,origem:o.origem||null,vendedor:o.vendedor||null,notas:o.notas||null,
+    nome:tipo==='cliente'?(o.nome||null):(o.cliente||null),nif:o.nif||null,email:o.email||null,telefone:o.telefone||null,morada:o.morada||null,codigo_postal:o.codigoPostal||null,localidade:o.localidade||null,distrito:o.distrito||null,pais:o.pais||null,
+    codigo:o.codigo||null,descricao:o.desc||o.descricao||o.artigo||null,marca:o.marca||null,modelo:o.modelo||null,categoria:o.categoria||null,fornecedor:o.fornecedor||null,
+    stock:Number(o.stock||o.stockAtual||0),stock_min:Number(o.stockMin||0),pc:Number(o.pc||0),pvp:Number(o.pvp||0),portes:Number(o.portes||0),ecovalor:Number(o.ecovalor||0),
+    quantidade:Number(o.qtd||o.quantidade||0),desconto:Number(o.desconto||0),base:Number(o.base||0),iva:Number(o.iva||0),total:Number(o.total||0),custo:Number(o.custo||0),
+    tipo_venda:o.tipo||o.tipoVenda||null,consulta_ref:o.consultaRef||null,pedido:o.pedido||null,probabilidade:Number(o.probabilidade||0),valor_previsto:Number(o.valor||o.valorPrevisto||0),referencia_fornecedor:o.referencia||o.referenciaFornecedor||null,
+    numero:o.numero||null,assunto:o.assunto||null,validade:o.validade||null,linhas:Array.isArray(o.linhas)?o.linhas:[],dados_extra:x,atualizado_em:new Date().toISOString()
+  };
+}
+function linhasTodasSupabase(){
+  const out=[];
+  [['artigo','artigos'],['cliente','clientes'],['venda','vendas'],['consulta','consultas'],['encomenda','encomendas'],['orcamento','orcamentos']].forEach(([tipo,k])=>(db[k]||[]).forEach(o=>out.push(linhaSupabase(tipo,o))));
+  if(db.marketingImagem)out.push({id:'config_marketing_imagem',tipo_registo:'config',ativo:true,dados_extra:{marketingImagem:db.marketingImagem},atualizado_em:new Date().toISOString(),linhas:[]});
+  return out;
+}
+function objetoDeLinhaSupabase(r){
+  const x=(r&&r.dados_extra&&typeof r.dados_extra==='object')?{...r.dados_extra}:{};
+  x.id=String(r.id);
+  return x;
+}
+async function testarSupabase(){
+  try{guardarConfigSupabase(false);setSupabaseStatus('A testar ligação...','info');const rows=await sbFetch('?select=id,tipo_registo&limit=1');setSupabaseStatus(`Ligação ao Supabase OK. Tabela <b>${configSupabase().table}</b> acessível${rows?.length?' e já contém dados':''}.`,'ok');return true}catch(e){console.error(e);setSupabaseStatus('Erro: '+e.message,'erro');return false}
+}
+async function sincronizarTudoSupabase(mostrar=false){
+  if(supabaseSyncing)return false;
+  try{
+    guardarConfigSupabase(false);if(!supabaseConfigurado()){if(mostrar)setSupabaseStatus('Preencha primeiro o URL e a chave.','warn');return false}
+    supabaseSyncing=true;if(mostrar)setSupabaseStatus('A sincronizar dados com o Supabase...','info');
+    const rows=linhasTodasSupabase();
+    const atuais=await sbFetch('?select=id');
+    const ids=new Set(rows.map(r=>String(r.id))),stale=(atuais||[]).map(r=>String(r.id)).filter(x=>!ids.has(x));
+    for(let i=0;i<rows.length;i+=200){const lote=rows.slice(i,i+200);await sbFetch('?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(lote)});}
+    for(const staleId of stale){await sbFetch(`?id=eq.${encodeURIComponent(staleId)}`,{method:'DELETE',headers:{'Prefer':'return=minimal'}});}
+    localStorage.setItem('dmSupabaseLastSync',new Date().toISOString());
+    if(mostrar)setSupabaseStatus(`Sincronização concluída: <b>${rows.length}</b> registos enviados.`,'ok');
+    return true;
+  }catch(e){console.error('Supabase sync:',e);setSupabaseStatus('Erro ao sincronizar: '+e.message,'erro');return false}finally{supabaseSyncing=false}
+}
+function agendarSupabaseAutoSync(){const c=configSupabase();if(!supabaseReadyForAutoSync||!c.url||!c.key||c.autoSync===false)return;clearTimeout(supabaseSyncTimer);supabaseSyncTimer=setTimeout(()=>sincronizarTudoSupabase(false),1200)}
+async function carregarTudoSupabase(confirmar=false){
+  try{
+    guardarConfigSupabase(false);if(!supabaseConfigurado()){setSupabaseStatus('Preencha primeiro o URL e a chave.','warn');return false}
+    if(confirmar&&!confirm('Carregar do Supabase vai substituir os dados locais deste navegador. Continuar?'))return false;
+    setSupabaseStatus('A carregar dados do Supabase...','info');
+    const rows=await sbFetch('?select=*&order=criado_em.asc');
+    if(!rows||!rows.length){setSupabaseStatus('A tabela está vazia. Use “Enviar dados atuais” para fazer a primeira migração.','warn');return false}
+    const novo={artigos:[],clientes:[],vendas:[],encomendas:[],consultas:[],orcamentos:[]};
+    rows.forEach(r=>{if(r.tipo_registo==='config'){const x=r.dados_extra||{};if(x.marketingImagem)novo.marketingImagem=x.marketingImagem;return}const k=tipoPluralSupabase(r.tipo_registo);if(k)novo[k].push(objetoDeLinhaSupabase(r));});
+    db=novo;db.artigos=(db.artigos||[]).map(a=>({stockMin:0,...a}));db.vendas=(db.vendas||[]).map(v=>({vendedor:'',consultaRef:'',estadoConsulta:'',...v}));db.consultas=(db.consultas||[]).map(c=>({vendedor:'',...c}));
+    saveDBSilent();corrigirVendasAntigas();updateDatalists();renderAll();
+    setSupabaseStatus(`Dados carregados: ${db.artigos.length} artigos, ${db.clientes.length} clientes, ${db.vendas.length} vendas, ${db.consultas.length} consultas, ${db.orcamentos.length} orçamentos.`,'ok');
+    return true;
+  }catch(e){console.error('Supabase load:',e);setSupabaseStatus('Erro ao carregar: '+e.message,'erro');return false}
+}
+window.addEventListener('load',()=>setTimeout(async()=>{preencherConfigSupabase();const c=configSupabase();if(c.url&&c.key){await carregarTudoSupabase(false)}supabaseReadyForAutoSync=true},450));
+
 function show(p,b){document.querySelectorAll('.page').forEach(x=>x.classList.add('hidden'));document.getElementById(p).classList.remove('hidden');document.querySelectorAll('.menu button').forEach(x=>x.classList.remove('active'));if(b)b.classList.add('active');toggleTipoVenda();renderAll();}
 function val(x){return document.getElementById(x).value.trim()} function num(x){return Number(document.getElementById(x).value)||0} function set(x,v){let e=document.getElementById(x); if(e)e.value=v??''} function setText(x,v){let e=document.getElementById(x); if(e)e.textContent=v??''}
 function table(headers,rows){return `<table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`}
