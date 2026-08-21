@@ -314,7 +314,6 @@ function guardarConfigSupabase(mostrar=false){
   const table=(document.getElementById('sbTable')?.value||prev.table||'pm_dados').trim()||'pm_dados';
   const autoSync=document.getElementById('sbAutoSync')?.checked!==false;
   localStorage.setItem(SB_CFG_KEY,JSON.stringify({url,key,table,autoSync}));
-  supabaseReadyForAutoSync=true;
   if(mostrar)setSupabaseStatus(url&&key?'Ligação guardada. Clique em “Testar ligação”.':'Preencha Project URL e a chave publishable/anon. ',url&&key?'ok':'warn');
 }
 function sbHeaders(extra={}){const c=configSupabase();return {'apikey':c.key,'Authorization':'Bearer '+c.key,'Content-Type':'application/json',...extra}}
@@ -333,7 +332,7 @@ function linhaSupabase(tipo,o){
     data:o.data||null,data_validade:o.validade||o.dataValidade||null,data_prevista:o.dataPrevista||null,data_recepcao:o.dataRececao||null,proximo_contacto:o.proximoContacto||null,
     estado:o.estado||o.tipoRegisto||o.ok||null,origem:o.origem||null,vendedor:o.vendedor||null,notas:o.notas||null,
     nome:tipo==='cliente'?(o.nome||null):(o.cliente||null),nif:o.nif||null,email:o.email||null,telefone:o.telefone||null,morada:o.morada||null,codigo_postal:o.codigoPostal||null,localidade:o.localidade||null,distrito:o.distrito||null,pais:o.pais||null,
-    codigo:o.codigo||null,descricao:o.desc||o.descricao||o.artigo||null,marca:o.marca||null,modelo:o.modelo||null,categoria:o.categoria||null,fornecedor:o.fornecedor||null,
+    codigo:tipo==='consulta'?(o.codigo||o.artigo||null):(o.codigo||null),descricao:tipo==='consulta'?((()=>{const a=typeof findArtigo==='function'?findArtigo(o.codigo||o.artigo):null;return a?.desc||o.descricao||null})()):(o.desc||o.descricao||o.artigo||null),marca:o.marca||null,modelo:o.modelo||null,categoria:o.categoria||null,fornecedor:o.fornecedor||null,
     stock:Number(o.stock||o.stockAtual||0),stock_min:Number(o.stockMin||0),pc:Number(o.pc||0),pvp:Number(o.pvp||0),portes:Number(o.portes||0),ecovalor:Number(o.ecovalor||0),
     quantidade:Number(o.qtd||o.quantidade||0),desconto:Number(o.desconto||0),base:Number(o.base||0),iva:Number(o.iva||0),total:Number(o.total||0),custo:Number(o.custo||0),
     tipo_venda:o.tipo||o.tipoVenda||null,consulta_ref:o.consultaRef||null,pedido:o.pedido||null,probabilidade:Number(o.probabilidade||0),valor_previsto:Number(o.valor||o.valorPrevisto||0),referencia_fornecedor:o.referencia||o.referenciaFornecedor||null,
@@ -347,8 +346,43 @@ function linhasTodasSupabase(){
   return out;
 }
 function objetoDeLinhaSupabase(r){
+  // dados_extra mantém compatibilidade com o formato antigo do index,
+  // mas as colunas normais do Supabase são sempre a fonte mais recente.
   const x=(r&&r.dados_extra&&typeof r.dados_extra==='object')?{...r.dados_extra}:{};
   x.id=String(r.id);
+  const tipo=String(r.tipo_registo||'');
+
+  if(tipo==='cliente'){
+    x.nome=r.nome??''; x.nif=r.nif??''; x.email=r.email??''; x.telefone=r.telefone??'';
+    x.morada=r.morada??''; x.codigoPostal=r.codigo_postal??''; x.localidade=r.localidade??'';
+    x.distrito=r.distrito??''; x.pais=r.pais??''; x.vendedor=r.vendedor??''; x.notas=r.notas??'';
+  }else if(tipo==='artigo'){
+    x.codigo=r.codigo??''; x.desc=r.descricao??''; x.marca=r.marca??''; x.modelo=r.modelo??'';
+    x.categoria=r.categoria??''; x.fornecedor=r.fornecedor??''; x.stock=Number(r.stock??0);
+    x.stockMin=Number(r.stock_min??0); x.pc=Number(r.pc??0); x.pvp=Number(r.pvp??0);
+    x.portes=Number(r.portes??0); x.ecovalor=Number(r.ecovalor??0); x.notas=r.notas??'';
+  }else if(tipo==='venda'){
+    x.data=r.data??''; x.tipo=r.tipo_venda??r.estado??x.tipo??'Venda'; x.estado=r.estado??x.estado??'';
+    x.vendedor=r.vendedor??''; x.cliente=r.nome??''; x.codigo=r.codigo??''; x.artigo=r.descricao??'';
+    x.qtd=Number(r.quantidade??0); x.pvp=Number(r.pvp??0); x.desconto=Number(r.desconto??0);
+    x.ecovalor=Number(r.ecovalor??0); x.portes=Number(r.portes??0); x.base=Number(r.base??0);
+    x.iva=Number(r.iva??0); x.total=Number(r.total??0); x.consultaRef=r.consulta_ref??''; x.notas=r.notas??'';
+  }else if(tipo==='consulta'){
+    x.data=r.data??''; x.estado=r.estado??''; x.vendedor=r.vendedor??''; x.cliente=r.nome??'';
+    x.codigo=r.codigo??''; x.artigo=r.codigo??r.descricao??''; x.descricao=r.descricao??''; x.qtd=Number(r.quantidade??0);
+    x.proximoContacto=r.proximo_contacto??''; x.probabilidade=Number(r.probabilidade??0);
+    x.valor=Number(r.valor_previsto??0); x.pedido=r.pedido??''; x.notas=r.notas??'';
+  }else if(tipo==='encomenda'){
+    x.data=r.data??''; x.estado=r.estado??''; x.origem=r.origem??''; x.fornecedor=r.fornecedor??'';
+    x.referencia=r.referencia_fornecedor??''; x.codigo=r.codigo??''; x.artigo=r.descricao??'';
+    x.qtd=Number(r.quantidade??0); x.custo=Number(r.custo??0); x.dataPrevista=r.data_prevista??'';
+    x.dataRececao=r.data_recepcao??''; x.notas=r.notas??'';
+  }else if(tipo==='orcamento'){
+    x.data=r.data??''; x.estado=r.estado??''; x.cliente=r.nome??''; x.nif=r.nif??''; x.email=r.email??'';
+    x.numero=r.numero??''; x.assunto=r.assunto??''; x.validade=r.validade??r.data_validade??'';
+    x.base=Number(r.base??0); x.iva=Number(r.iva??0); x.total=Number(r.total??0);
+    x.linhas=Array.isArray(r.linhas)?r.linhas:[]; x.notas=r.notas??'';
+  }
   return x;
 }
 async function testarSupabase(){
@@ -371,8 +405,13 @@ async function sincronizarTudoSupabase(mostrar=false){
 }
 function agendarSupabaseAutoSync(){const c=configSupabase();if(!supabaseReadyForAutoSync||!c.url||!c.key||c.autoSync===false)return;clearTimeout(supabaseSyncTimer);supabaseSyncTimer=setTimeout(()=>sincronizarTudoSupabase(false),1200)}
 async function carregarTudoSupabase(confirmar=false){
+  const readyAnterior=supabaseReadyForAutoSync;
   try{
-    guardarConfigSupabase(false);if(!supabaseConfigurado()){setSupabaseStatus('Preencha primeiro o URL e a chave.','warn');return false}
+    guardarConfigSupabase(false);
+    // Durante a leitura, nunca deixar renderAll/saveDB enviar a cópia local de volta.
+    supabaseReadyForAutoSync=false;
+    clearTimeout(supabaseSyncTimer);
+    if(!supabaseConfigurado()){setSupabaseStatus('Preencha primeiro o URL e a chave.','warn');return false}
     if(confirmar&&!confirm('Carregar do Supabase vai substituir os dados locais deste navegador. Continuar?'))return false;
     setSupabaseStatus('A carregar dados do Supabase...','info');
     const rows=await sbFetch('?select=*&order=criado_em.asc');
@@ -384,6 +423,9 @@ async function carregarTudoSupabase(confirmar=false){
     setSupabaseStatus(`Dados carregados: ${db.artigos.length} artigos, ${db.clientes.length} clientes, ${db.vendas.length} vendas, ${db.consultas.length} consultas, ${db.orcamentos.length} orçamentos.`,'ok');
     return true;
   }catch(e){console.error('Supabase load:',e);setSupabaseStatus('Erro ao carregar: '+e.message,'erro');return false}
+  finally{
+    supabaseReadyForAutoSync=readyAnterior||supabaseConfigurado();
+  }
 }
 window.addEventListener('load',()=>setTimeout(async()=>{preencherConfigSupabase();const c=configSupabase();if(c.url&&c.key){await carregarTudoSupabase(false)}supabaseReadyForAutoSync=true},450));
 
@@ -496,12 +538,23 @@ function renderAll(){
 function getEncomendas(){
   // Sugestões automáticas por stock mínimo, vendas sem stock e registos pendentes.
   const pendentesPorCodigo={};
+  const vendasPendentesIds=new Set();
   (db.vendas||[]).forEach(v=>{
     const estado=tipoVenda(v);
     if(estado!=='Pendente') return;
     const codigo=String(v.codigo||'').trim();
     if(!codigo) return;
+    vendasPendentesIds.add(String(v.id||''));
     pendentesPorCodigo[codigo]=(pendentesPorCodigo[codigo]||0)+Math.max(1,+v.qtd||1);
+  });
+  // Inclui também pendentes criados diretamente na aba Consultas.
+  // Se a consulta estiver ligada a uma venda pendente já contada, não duplica.
+  (db.consultas||[]).forEach(c=>{
+    if(String(c.estado||'').toLowerCase()!=='pendente') return;
+    if(c.vendaId && vendasPendentesIds.has(String(c.vendaId))) return;
+    const codigo=String(c.codigo||c.artigo||'').trim();
+    if(!codigo) return;
+    pendentesPorCodigo[codigo]=(pendentesPorCodigo[codigo]||0)+Math.max(1,+c.qtd||1);
   });
 
   const manuais=(db.encomendas||[]).map(e=>({
@@ -594,7 +647,7 @@ function renderGlobal(){let q=val('globalSearch'); if(!q){resultadosGlobais.inne
 
 function normalizaRefArtigo(v){return String(v||'').trim().toLowerCase()}
 function consultaCorrespondeArtigo(c,a){
-  const ref=normalizaRefArtigo(c&&c.artigo), codigo=normalizaRefArtigo(a&&a.codigo), desc=normalizaRefArtigo(a&&a.desc);
+  const ref=normalizaRefArtigo(c&&(c.codigo||c.artigo)), codigo=normalizaRefArtigo(a&&a.codigo), desc=normalizaRefArtigo(a&&a.desc);
   return !!ref && (ref===codigo || ref===desc);
 }
 function alertarPendentesAoEntrarStock(artigo,stockAnterior){
@@ -920,18 +973,57 @@ function prepararConsultaParaVenda(i){
 function saveConsulta(){
   garantirCliente(val('qCliente'));
   garantirArtigo(val('qArtigo'));
-  let o={id:edit.consulta||id(),data:val('qData')||hoje(),cliente:val('qCliente'),artigo:val('qArtigo'),pedido:val('qPedido'),estado:val('qEstado'),origem:'Consultas'};
-  const existente=(db.consultas||[]).find(c=>c.id===edit.consulta);
-  if(existente && existente.vendaId) o.vendaId=existente.vendaId;
+  const refArtigo=val('qArtigo');
+  const artigoEncontrado=findArtigo(refArtigo);
+  let o={id:edit.consulta||id(),data:val('qData')||hoje(),cliente:val('qCliente'),codigo:artigoEncontrado?.codigo||refArtigo,artigo:artigoEncontrado?.codigo||refArtigo,descricao:artigoEncontrado?.desc||'',pedido:val('qPedido'),estado:val('qEstado'),origem:'Consultas'};
+  const existente=(db.consultas||[]).find(c=>String(c.id)===String(edit.consulta));
+  if(existente){
+    if(existente.vendaId) o.vendaId=existente.vendaId;
+    if(existente.vendedor) o.vendedor=existente.vendedor;
+    if(existente.origem) o.origem=existente.origem;
+    if(existente.notas) o.notas=existente.notas;
+    if(existente.qtd!=null) o.qtd=existente.qtd;
+  }
   if(o.estado==='OK') converterConsultaEmVenda(o);
-  if(edit.consulta) db.consultas=(db.consultas||[]).map(c=>c.id==edit.consulta?o:c); else db.consultas.push(o);
+  if(edit.consulta) db.consultas=(db.consultas||[]).map(c=>String(c.id)===String(edit.consulta)?o:c); else db.consultas.push(o);
   if(o.estado==='OK' && o.vendaId){ db.consultas=(db.consultas||[]).filter(c=>c.id!==o.id); }
   clearConsulta();renderAll();
 }
 function editConsulta(i){
-  let c=getConsultasTodas().find(x=>x.id==i); if(!c) return;
-  if(String(i).startsWith('vendaconsulta_')){ db.consultas=db.consultas||[]; c={...c,id:id()}; db.consultas.push(c); }
-  edit.consulta=c.id;conFormTitle.textContent='Editar consulta';set('qData',c.data);set('qCliente',c.cliente);set('qArtigo',c.artigo);set('qPedido',c.pedido);set('qEstado',c.estado);show('consultas',document.querySelector('.menu button[onclick*="consultas"]')||null);scrollTo(0,0)
+  try{
+    db.consultas=db.consultas||[];
+    let c=db.consultas.find(x=>String(x.id)===String(i));
+
+    // Consultas geradas a partir da aba Vendas podem existir apenas como vista virtual.
+    // Nesse caso cria uma cópia real editável, mantendo a ligação à venda original.
+    if(!c){
+      const virtual=getConsultasTodas().find(x=>String(x.id)===String(i));
+      if(virtual){
+        c={...virtual,id:id(),origem:virtual.origem||'Vendas'};
+        db.consultas.push(c);
+      }
+    }
+    if(!c){
+      alert('Não foi possível localizar esta consulta para edição. Atualize a página e tente novamente.');
+      return;
+    }
+
+    edit.consulta=String(c.id);
+    const titulo=document.getElementById('conFormTitle'); if(titulo) titulo.textContent='Editar consulta';
+    set('qData',c.data||hoje());
+    set('qCliente',c.cliente||'');
+    set('qArtigo',c.codigo||c.artigo||'');
+    set('qPedido',c.pedido||'');
+    set('qEstado',c.estado||'Pendente');
+
+    const btn=[...document.querySelectorAll('.menu button')].find(b=>String(b.getAttribute('onclick')||'').includes("show('consultas'"));
+    show('consultas',btn||null);
+    window.scrollTo({top:0,behavior:'smooth'});
+    setTimeout(()=>document.getElementById('qCliente')?.focus(),80);
+  }catch(e){
+    console.error('Erro ao editar consulta:',e);
+    alert('Erro ao abrir a consulta para edição: '+(e?.message||'erro desconhecido'));
+  }
 }
 function delConsulta(i){if(confirm('Apagar consulta?')){db.consultas=(db.consultas||[]).filter(c=>c.id!=i);saveDB();renderAll()}}
 function renderConsultas(){
