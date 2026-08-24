@@ -277,7 +277,7 @@ function calcVendaValores(v){
 
 let edit={artigo:null,cliente:null,venda:null,consulta:null,orcamento:null};
 let db=JSON.parse(localStorage.getItem('dmStockCrmV2')||'null')||{artigos:[{id:id(),codigo:'ART001',desc:'125/80 R17',fornecedor:'Fornecedor A',stock:4,stockMin:5,pc:45,portes:5,pvp:90,notas:''},{id:id(),codigo:'ART002',desc:'205/55 R16',fornecedor:'Fornecedor B',stock:0,stockMin:4,pc:55,portes:6,pvp:105,notas:''}],clientes:[{id:id(),nome:'Cliente Lisboa',nif:'',telefone:'',email:'',distrito:'Lisboa',morada:'',notas:''},{id:id(),nome:'Cliente Porto',nif:'',telefone:'',email:'',distrito:'Porto',morada:'',notas:''}],vendas:[],encomendas:[],consultas:[{id:id(),data:hoje(),cliente:'Cliente Lisboa',artigo:'125/80 R17',pedido:'Preço e disponibilidade',estado:'Pendente'}]};
-db.encomendas=db.encomendas||[];db.consultas=db.consultas||[];db.orcamentos=db.orcamentos||[];db.artigos=(db.artigos||[]).map(a=>({stockMin:0,...a}));db.vendas=(db.vendas||[]).map(v=>({vendedor:'',consultaRef:'',estadoConsulta:'',...v}));db.consultas=(db.consultas||[]).map(c=>({vendedor:'',...c}));
+db.encomendas=db.encomendas||[];db.encomendasIgnoradas=db.encomendasIgnoradas||[];db.consultas=db.consultas||[];db.orcamentos=db.orcamentos||[];db.artigos=(db.artigos||[]).map(a=>({stockMin:0,...a}));db.vendas=(db.vendas||[]).map(v=>({vendedor:'',consultaRef:'',estadoConsulta:'',...v}));db.consultas=(db.consultas||[]).map(c=>({vendedor:'',...c}));
 function saveDB(){
   localStorage.setItem('dmStockCrmV2',JSON.stringify(db));
   localStorage.setItem('dmStockCrmV2_lastSave',new Date().toLocaleString('pt-PT'));
@@ -540,6 +540,14 @@ function renderAll(){
   saveDB();
 }
 
+function chaveSugestaoEncomenda(e){
+  return [String(e?.codigo||'').trim().toLowerCase(),String(e?.origem||''),String(e?.tipo||''),+(e?.stockAtual||0),+(e?.stockMin||0),+(e?.pendenteQtd||0),+(e?.qtd||0)].join('|');
+}
+function sugestaoEncomendaIgnorada(e){return (db.encomendasIgnoradas||[]).includes(chaveSugestaoEncomenda(e));}
+function limparIgnoradasObsoletas(sugestoesAtuais){
+  const atuais=new Set((sugestoesAtuais||[]).map(chaveSugestaoEncomenda));
+  db.encomendasIgnoradas=(db.encomendasIgnoradas||[]).filter(k=>atuais.has(k));
+}
 function getEncomendas(){
   // Sugestões automáticas por stock mínimo e registos pendentes.
   // Uma encomenda marcada como "Encomendado" passa a ser um registo persistente
@@ -586,7 +594,9 @@ function getEncomendas(){
     if(ativos.has(codigo.toLowerCase()) || sugestoes.some(x=>String(x.codigo).toLowerCase()===codigo.toLowerCase())) return;
     sugestoes.push({id:'pend_'+codigo,data:hoje(),origem:'Venda/consulta pendente',tipo:'pendente',estado:'PENDENTE',codigo,desc:codigo,fornecedor:'',stockAtual:0,stockMin:0,pendenteQtd,qtd:pendenteQtd,valor:0});
   });
-  const todos=[...manuais,...sugestoes];
+  limparIgnoradasObsoletas(sugestoes);
+  const sugestoesVisiveis=sugestoes.filter(e=>!sugestaoEncomendaIgnorada(e));
+  const todos=[...manuais,...sugestoesVisiveis];
   const pr={encomendado:0,critico:1,pendente:2,aviso:3,manual:4,finalizada:8};
   return todos.sort((a,b)=>(pr[a.tipo]??9)-(pr[b.tipo]??9)||String(b.dataEncomenda||b.dataRececao||b.data||'').localeCompare(String(a.dataEncomenda||a.dataRececao||a.data||'')));
 }
@@ -916,6 +926,27 @@ function finalizarEncomenda(i){
   alert(`Encomenda finalizada. Quantidade recebida: ${recebida}${a?` · Stock atual: ${a.stock}`:' · Artigo não localizado no stock.'}`);
 }
 function reabrirEncomenda(i){const e=(db.encomendas||[]).find(x=>String(x.id)===String(i));if(!e)return;e.estado='Encomendado';e.tipo='encomendado';saveDB();renderAll();}
+function eliminarEncomenda(i){
+  const idx=(db.encomendas||[]).findIndex(x=>String(x.id)===String(i));
+  if(idx>=0){
+    const e=db.encomendas[idx];
+    const finalizada=String(e.estado||'').toLowerCase()==='finalizada';
+    const msg=finalizada
+      ? 'Eliminar esta encomenda do histórico? O stock que já entrou NÃO será retirado.'
+      : 'Eliminar esta encomenda?';
+    if(!confirm(msg))return;
+    db.encomendas.splice(idx,1);
+    saveDB();renderAll();return;
+  }
+  const e=getEncomendas().find(x=>String(x.id)===String(i));
+  if(!e)return;
+  if(!confirm('Eliminar/ocultar esta sugestão automática? Ela só voltará a aparecer se a situação do artigo mudar.'))return;
+  db.encomendasIgnoradas=db.encomendasIgnoradas||[];
+  const k=chaveSugestaoEncomenda(e);
+  if(!db.encomendasIgnoradas.includes(k))db.encomendasIgnoradas.push(k);
+  saveDB();renderAll();
+}
+
 function renderEncomendas(){
   if(!document.getElementById('tblEncomendas')) return;
   let q=val('searchEncomendas'),f=val('filtroEncomendas'); let lista=getEncomendas().filter(e=>match(e,q));
@@ -931,9 +962,9 @@ function renderEncomendas(){
     const datas=st==='encomendado'?`Encomendado: ${e.dataEncomenda||e.data||''}`:st==='finalizada'?`Recebido: ${e.dataRececao||''}`:(e.data||'');
     const qtdInfo=st==='finalizada'?`${e.qtd||0} / <b>${e.qtdRecebida||0}</b>`:`<b>${e.qtd||0}</b>`;
     let acao='';
-    if(st==='encomendado')acao=`<button class="btn green" onclick="finalizarEncomenda('${e.id}')">Finalizar encomenda</button>`;
-    else if(st==='finalizada')acao=`<button class="btn ghost" onclick="reabrirEncomenda('${e.id}')">Reabrir</button>`;
-    else acao=`<button class="btn primary" onclick="marcarComoEncomendado('${e.id}')">Marcar Encomendado</button>`;
+    if(st==='encomendado')acao=`<button class="btn green" onclick="finalizarEncomenda('${e.id}')">Finalizar encomenda</button> <button class="btn red" onclick="eliminarEncomenda('${e.id}')">Eliminar</button>`;
+    else if(st==='finalizada')acao=`<button class="btn ghost" onclick="reabrirEncomenda('${e.id}')">Reabrir</button> <button class="btn red" onclick="eliminarEncomenda('${e.id}')">Eliminar</button>`;
+    else acao=`<button class="btn primary" onclick="marcarComoEncomendado('${e.id}')">Marcar Encomendado</button> <button class="btn red" onclick="eliminarEncomenda('${e.id}')">Eliminar</button>`;
     return `<tr><td>${datas}</td><td>${e.fornecedor||'<span class="small">Sem fornecedor</span>'}</td><td>${e.codigo||''}</td><td>${e.desc||e.artigo||''}</td><td>${e.origem||''}</td><td>${e.stockAtual??''}</td><td>${e.stockMin??''}</td><td>${qtdInfo}</td><td><b>${e.pendenteQtd||0}</b></td><td>${e.referencia||''}</td><td class="money">${eur(e.valor||0)}</td><td><span class="stockBadge ${cls}">${estado}</span></td><td>${acao}</td></tr>`;
   });
   tblEncomendas.innerHTML=rows.length?table(['Data / movimento','Fornecedor','Código','Artigo','Origem','Stock','Stock mínimo','Qtd encom. / recebida','Pendente','Ref. fornecedor','Valor estimado','Estado','Ações'],rows):'<span class="small">Sem artigos para encomendar.</span>';
@@ -955,9 +986,9 @@ function renderHistoricoEncomendas(){
     const stock=st==='finalizada'?(e.stockDepoisRececao??''):(e.stockAtual??'');
     const estado=st==='finalizada'?'Finalizada':'Encomendado';
     const cls=st==='finalizada'?'stockGreen':'stockYellow';
-    return `<tr><td>${dataEnc}</td><td>${dataRec}</td><td>${e.fornecedor||''}</td><td>${e.codigo||''}</td><td>${e.desc||e.artigo||''}</td><td><b>${qtdEnc}</b></td><td>${qtdRec===''?'—':`<b>${qtdRec}</b>`}</td><td>${stock}</td><td>${e.referencia||''}</td><td class="money">${eur(e.valor||0)}</td><td><span class="stockBadge ${cls}">${estado}</span></td></tr>`;
+    return `<tr><td>${dataEnc}</td><td>${dataRec}</td><td>${e.fornecedor||''}</td><td>${e.codigo||''}</td><td>${e.desc||e.artigo||''}</td><td><b>${qtdEnc}</b></td><td>${qtdRec===''?'—':`<b>${qtdRec}</b>`}</td><td>${stock}</td><td>${e.referencia||''}</td><td class="money">${eur(e.valor||0)}</td><td><span class="stockBadge ${cls}">${estado}</span></td><td><button class="btn red" onclick="eliminarEncomenda('${e.id}')">Eliminar</button></td></tr>`;
   });
-  wrap.innerHTML=rows.length?table(['Data encomenda','Data receção','Fornecedor','Código','Artigo','Qtd encomendada','Qtd recebida','Stock após movimento','Ref. fornecedor','Valor estimado','Estado'],rows):'<div class="emptyState">Ainda não existem encomendas no histórico.</div>';
+  wrap.innerHTML=rows.length?table(['Data encomenda','Data receção','Fornecedor','Código','Artigo','Qtd encomendada','Qtd recebida','Stock após movimento','Ref. fornecedor','Valor estimado','Estado','Ações'],rows):'<div class="emptyState">Ainda não existem encomendas no histórico.</div>';
 }
 
 function renderPendentes(){
