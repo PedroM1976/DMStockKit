@@ -533,7 +533,28 @@ function renderCentroDecisao(){
   el('cdPlano').innerHTML=plano.map((x,i)=>`<div class="decisionStep"><i>${i+1}</i><b>${x[0]}</b><span>${x[1]}</span></div>`).join('');
 }
 
+function migrarConsultasOKParaVendas(){
+  db.consultas=db.consultas||[];
+  let convertidas=0;
+  const manter=[];
+  for(const c of db.consultas){
+    if(String(c.estado||'').trim().toUpperCase()==='OK'){
+      const antes=(db.vendas||[]).length;
+      const v=converterConsultaEmVenda(c);
+      if(v){
+        convertidas += (db.vendas||[]).length>antes ? 1 : 0;
+        continue; // OK já é venda: deixa de aparecer como consulta separada.
+      }
+    }
+    manter.push(c);
+  }
+  db.consultas=manter;
+  return convertidas;
+}
+
 function renderAll(){
+  // Corrige também registos antigos que já tinham sido marcados OK antes desta versão.
+  migrarConsultasOKParaVendas();
   // Guarda primeiro para que editar/apagar não falhe mesmo que algum gráfico externo não carregue.
   saveDB();
   [updateDatalists,renderKPIs,renderGlobal,renderArtigos,renderClientes,renderVendas,renderVendedoresABC,renderEncomendas,renderHistoricoEncomendas,renderPendentes,renderConsultas,renderOrcamentos,renderMapa,renderRelatorios,renderInteligentes,renderCentroDecisao,renderCharts,renderBackup].forEach(safeRun);
@@ -1026,13 +1047,62 @@ function getConsultasTodas(){
   return base.sort((a,b)=>(b.data||'').localeCompare(a.data||''));
 }
 function converterConsultaEmVenda(c){
-  if(!c || !c.vendaId) return;
-  let v=db.vendas.find(x=>x.id===c.vendaId); if(!v) return;
-  if(tipoVenda(v)==='Venda') return;
-  let a=findArtigo(v.codigo), qtd=+v.qtd||1;
+  if(!c) return null;
+  db.vendas=db.vendas||[];
+
+  // Se a consulta já nasceu na aba Vendas, converte o registo existente.
+  if(c.vendaId){
+    let v=db.vendas.find(x=>String(x.id)===String(c.vendaId));
+    if(v){
+      if(tipoVenda(v)!=='Venda'){
+        let a=findArtigo(v.codigo||c.codigo||c.artigo), qtd=Math.max(1,+v.qtd||+c.qtd||1);
+        if(a && (+a.stock||0)>=qtd){ a.stock=(+a.stock||0)-qtd; }
+        else { registarEncomendaVenda(a,qtd,a?(+a.stock||0):0); }
+        v.tipoRegisto='Venda'; v.ok='OK'; v.estadoConsulta='';
+      }
+      return v;
+    }
+    // Ligação antiga inválida: recria abaixo uma venda real.
+    delete c.vendaId;
+  }
+
+  // Consultas/Pendentes criados diretamente não tinham vendaId e, antes,
+  // ficavam apenas com estado OK. Agora criamos automaticamente a venda.
+  const a=findArtigo(c.codigo||c.artigo)||findArtigo(c.pedido);
+  const qtd=Math.max(1,+c.qtd||1);
+  const valores=calcVendaValores({
+    qtd,
+    pvp:a?(+a.pvp||0):0,
+    desconto:0,
+    ecovalor:0,
+    portes:a?(+a.portes||0):0
+  });
+  const v={
+    id:id(),
+    data:c.data||hoje(),
+    vendedor:c.vendedor||'',
+    cliente:c.cliente||'',
+    codigo:(a&&a.codigo)||(c.codigo||c.artigo||''),
+    qtd:valores.qtd,
+    pvp:valores.pvp,
+    desconto:valores.desconto,
+    ecovalor:valores.ecovalor,
+    portes:valores.portes,
+    base:valores.base,
+    iva:valores.iva,
+    total:valores.total,
+    carro:'',modelo:'',ano:'',
+    ok:'OK',tipoRegisto:'Venda',estadoConsulta:'',
+    notas:c.notas||c.pedido||'',
+    consultaRef:c.pedido||''
+  };
+
   if(a && (+a.stock||0)>=qtd){ a.stock=(+a.stock||0)-qtd; }
   else { registarEncomendaVenda(a,qtd,a?(+a.stock||0):0); }
-  v.tipoRegisto='Venda'; v.ok='OK'; v.estadoConsulta='';
+
+  db.vendas.push(v);
+  c.vendaId=v.id;
+  return v;
 }
 
 function prepararConsultaParaVenda(i){
