@@ -738,22 +738,28 @@ function renderCentroPendentes(){
   box.innerHTML=rows.length?table(['Data','Cliente','Artigo','Estado','Stock físico','Reserva','Stock livre','Ações'],rows):'<div class="emptyState">Sem acompanhamentos neste estado.</div>';
 }
 function qtdPendenteArtigo(a){
-  const codigo=String(a&&a.codigo||'').trim().toLowerCase();
-  const descricao=String(a&&a.desc||'').trim().toLowerCase();
-  return (db.vendas||[]).filter(v=>{
-    if(tipoVenda(v)!=='Pendente') return false;
-    const ref=String(v.codigo||'').trim().toLowerCase();
-    return ref && (ref===codigo || ref===descricao);
-  }).reduce((s,v)=>s+Math.max(1,+v.qtd||1),0);
+  // Conta todos os pendentes associados ao artigo, quer tenham origem em Vendas
+  // quer em Consultas. getConsultasTodas() já junta as duas origens e evita
+  // duplicar uma venda quando existe uma consulta ligada pelo vendaId.
+  const vistos=new Set();
+  return getConsultasTodas()
+    .filter(c=>String(c.estado||'').toLowerCase()==='pendente' && consultaCorrespondeArtigo(c,a))
+    .filter(c=>{
+      const k=String(c.vendaId||c.id||'');
+      if(vistos.has(k)) return false;
+      vistos.add(k);
+      return true;
+    })
+    .reduce((s,c)=>s+qtdReservaConsulta(c),0);
 }
 function renderArtigos(){
   let q=val('searchArtigos');
   let rows=db.artigos.filter(a=>match(a,q)).map(a=>{
     let e=estadoStock(a), pendente=qtdPendenteArtigo(a), reservadas=reservasDoArtigo(a), stockLivre=stockLivreArtigo(a);
-    let pendenteHtml=pendente>0?`<span class="status pendente" title="Quantidade atualmente registada como pendente">${pendente}</span>`:'0';
+    let pendenteHtml=pendente>0?`<span class="status pendente" title="Quantidade total pendente deste artigo">${pendente}</span>`:'0';
     return `<tr class="${(+a.stock||0)<=0?'warnrow':''}"><td>${a.codigo}</td><td>${a.desc}</td><td>${a.fornecedor||''}</td><td class="${(+a.stock||0)<=0?'semstock':''}">${a.stock}</td><td>${a.stockMin||0}</td><td>${pendenteHtml}</td><td>${reservadas?`<span class="status reserved">${reservadas}</span>`:'0'}</td><td><b>${stockLivre}</b></td><td><span class="stockBadge ${e.cls}">${e.txt}</span></td><td class="money">${eur(a.pc)}</td><td class="money">${eur(a.portes)}</td><td class="money">${eur(a.pvp)}</td><td><button class="btn ghost" onclick="editArtigo('${a.id}')">Editar</button> <button class="btn red" onclick="delArtigo('${a.id}')">Apagar</button></td></tr>`
   });
-  tblArtigos.innerHTML=table(['Código','Descrição','Fornecedor','Stock','Stock mínimo','Pendente','Reservado','Livre','Estado','Preço compra','Portes','PVP s/ IVA','Ações'],rows)
+  tblArtigos.innerHTML=table(['Código','Descrição','Fornecedor','Stock','Stock mínimo','Pendentes','Reservado','Livre','Estado','Preço compra','Portes','PVP s/ IVA','Ações'],rows)
 }
 function clearCliente(){edit.cliente=null;['cNome','cNif','cTelefone','cEmail','cDistrito','cMorada','cNotas'].forEach(x=>set(x,''));cliFormTitle.textContent='Novo cliente'}
 function saveCliente(){let o={id:edit.cliente||id(),nome:val('cNome'),nif:val('cNif'),telefone:val('cTelefone'),email:val('cEmail'),distrito:val('cDistrito'),morada:val('cMorada'),notas:val('cNotas')}; if(edit.cliente)db.clientes=db.clientes.map(c=>c.id==edit.cliente?o:c);else db.clientes.push(o); clearCliente();renderAll();}
